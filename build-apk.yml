@@ -1,0 +1,100 @@
+name: Build PattNG APK
+
+on:
+  workflow_dispatch: # امکان اجرای دستی از تب Actions
+  push:
+    branches: [ master, main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ۱. دریافت کامل سورس کد همراه با ساب‌ماژول‌ها
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ۲. تنظیم جاوا ۱۷
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ۳. تنظیم محیط اندروید و NDK
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26b
+
+      # ۴. تنظیم Go
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # ۵. تنظیم Rust و معماری‌های اندروید
+      - name: Set up Rust & Targets
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
+      # ۶. نصب ابزار gomobile برای ساخت لایبرری Xray
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      # ۷. کامپایل هسته Xray (ساخت libv2ray.aar)
+      - name: Build AndroidLibXrayLite (AAR)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          mkdir -p V2rayNG/app/libs
+          cd AndroidLibXrayLite
+          gomobile bind -v -target=android -androidapi 24 -o ../V2rayNG/app/libs/libv2ray.aar ./
+          cd ..
+
+      # ۸. اجرای اسکریپت‌های کامپایل C, Rust, Go
+      - name: Compile Native Binaries
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          chmod +x compile-hevtun.sh compile-aether.sh compile-psiphon.sh compile-pt.sh fetch-psiphon-servers.sh
+          
+          ./compile-hevtun.sh
+          ./compile-aether.sh
+          ./compile-psiphon.sh
+          ./compile-pt.sh
+          ./fetch-psiphon-servers.sh
+
+      # ۹. کپی باینری‌های کامپایل شده به پوشه برنامه
+      - name: Copy Native Libraries to App
+        run: |
+          # کپی فایل‌های نیتیو hev
+          cp -r libs/* V2rayNG/app/libs/ || true
+          
+          # کپی باینری‌های Aether, Psiphon و PT در پوشه‌های متناظر هر معماری
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p V2rayNG/app/libs/$abi
+            cp libs-aether/$abi/*.so V2rayNG/app/libs/$abi/ || true
+            cp libs-psiphon/$abi/*.so V2rayNG/app/libs/$abi/ || true
+            cp libs-pt/$abi/*.so V2rayNG/app/libs/$abi/ || true
+          done
+
+      # ۱۰. ساخت فایل‌های APK با گریدل
+      - name: Build with Gradle
+        run: |
+          cd V2rayNG
+          chmod +x gradlew
+          ./gradlew assemblePlaystoreDebug --stacktrace
+
+      # ۱۱. آپلود فایل‌های APK تولید شده به عنوان خروجی (Artifact)
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: PattNG-APKs
+          path: V2rayNG/app/build/outputs/apk/**/*.apk
