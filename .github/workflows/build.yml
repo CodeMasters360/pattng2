@@ -164,9 +164,8 @@ jobs:
     - name: Download libv2ray
       run: |
         mkdir -p V2rayNG/app/libs/
-        curl -L -f -o V2rayNG/app/libs/libv2ray.aar "https://github.com/patterniha/AndroidLibXrayLite/releases/download/${{ env.CURRENT_TAG }}/libv2ray.aar" || \
-        curl -L -f -o V2rayNG/app/libs/libv2ray.aar "https://github.com/patterniha/AndroidLibXrayLite/releases/latest/download/libv2ray.aar"
-
+        curl -L -f -o V2rayNG/app/libs/libv2ray.aar "https://github.com/2dust/AndroidLibXrayLite/releases/download/v26.9.30/libv2ray.aar"
+        
     - name: Setup Java
       uses: actions/setup-java@v4
       with:
