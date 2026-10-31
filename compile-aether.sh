@@ -13,7 +13,8 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "Rust: cargo not found. install the Rust toolchain"
   exit 1
 fi
-
+git config --global url."https://github.com/".insteadOf git@github.com: || true
+git submodule update --init --recursive || true
 CORE_DIR="$__dir/aether/aether"
 if [[ ! -f "$CORE_DIR/Cargo.toml" ]]; then
   echo "Aether core sources not found at $CORE_DIR"
