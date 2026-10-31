@@ -6,13 +6,36 @@ set -o nounset
 __dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 __file="${__dir}/$(basename "${BASH_SOURCE[0]}")"
 __base="$(basename ${__file} .sh)"
+
 if [[ ! -d $NDK_HOME ]]; then
   echo "Android NDK: NDK_HOME not found. please set env \$NDK_HOME"
   exit 1
 fi
+
+# -------------------------------------------------------------
+# بررسی و دریافت خودکار hev-socks5-tunnel و زیرشاخه‌های third-part
+# -------------------------------------------------------------
+git config --global url."https://github.com/".insteadOf git@github.com: || true
+
+if [[ ! -f "$__dir/hev-socks5-tunnel/build.mk" ]]; then
+  echo "hev-socks5-tunnel not found. Initializing submodule..."
+  git -C "$__dir" submodule update --init --recursive hev-socks5-tunnel || true
+fi
+
+# اگر ساب‌ماژول به هر دلیلی کلون نشد، مستقیماً دانلودش کن:
+if [[ ! -f "$__dir/hev-socks5-tunnel/build.mk" ]]; then
+  echo "Submodule failed, cloning hev-socks5-tunnel repository directly..."
+  rm -rf "$__dir/hev-socks5-tunnel"
+  git clone --depth 1 --recursive https://github.com/heiher/hev-socks5-tunnel.git "$__dir/hev-socks5-tunnel"
+else
+  # مطمئن شدن از دانلود ساب‌ماژول‌های داخل third-part
+  git -C "$__dir/hev-socks5-tunnel" submodule update --init --recursive || true
+fi
+# -------------------------------------------------------------
+
 TMPDIR=$(mktemp -d)
 clear_tmp () {
-  rm -rf $TMPDIR
+  rm -rf "$TMPDIR"
 }
 trap 'echo -e "Aborted, error $? in command: $BASH_COMMAND"; trap ERR; clear_tmp; exit 1' ERR INT
 
@@ -28,6 +51,7 @@ ln -s "$__dir/hev-socks5-tunnel" jni/hev-socks5-tunnel
 echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
 
 "$NDK_HOME/ndk-build" \
+    APP_ALLOW_MISSING_DEPS=true \
     NDK_PROJECT_PATH=. \
     APP_BUILD_SCRIPT=jni/Android.mk \
     "APP_ABI=$ABIS" \
@@ -35,7 +59,7 @@ echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
     NDK_LIBS_OUT="$TMPDIR/libs" \
     NDK_OUT="$TMPDIR/obj" \
     "APP_CFLAGS=-O3 -DPKGNAME=com/v2ray/ang/service" \
-    "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu" \
+    "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu"
 
 # 2) Standalone executable (libhevsockstun.so) — run as a separate root
 #    process by com.v2ray.ang.core.root for the Root run mode. Same hev source,
@@ -81,6 +105,7 @@ include $(BUILD_EXECUTABLE)
 EXECMK
 
 "$NDK_HOME/ndk-build" \
+    APP_ALLOW_MISSING_DEPS=true \
     NDK_PROJECT_PATH=. \
     APP_BUILD_SCRIPT=jni/exec.mk \
     "APP_ABI=$ABIS" \
@@ -88,7 +113,7 @@ EXECMK
     NDK_LIBS_OUT="$TMPDIR/libs-exec" \
     NDK_OUT="$TMPDIR/obj-exec" \
     "APP_CFLAGS=-O3" \
-    "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu" \
+    "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu"
 
 # Stage both artifacts under libs/<abi>/. The executable is renamed to
 # lib*.so so the APK installer extracts it into nativeLibraryDir as an
@@ -100,4 +125,4 @@ for abi in $ABIS; do
 done
 
 popd
-rm -rf $TMPDIR
+rm -rf "$TMPDIR"
