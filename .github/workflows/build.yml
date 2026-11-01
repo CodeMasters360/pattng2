@@ -36,8 +36,23 @@ jobs:
 
     - name: Initialize nested submodules
       run: |
+        # Redirect all git@ SSH URLs to HTTPS so GitHub Actions runner can clone them without SSH keys
+        git config --global url."https://github.com/".insteadOf git@github.com:
+        git config --global url."https://".insteadOf git://
+
+        # Sync and update root submodules recursively
         git submodule sync --recursive
         git submodule update --init --recursive --force
+
+        # Explicitly ensure submodules inside aether and hev-socks5-tunnel are initialized
+        if [ -d "aether" ]; then
+          git -C aether submodule sync --recursive || true
+          git -C aether submodule update --init --recursive --force || true
+        fi
+        if [ -d "hev-socks5-tunnel" ]; then
+          git -C hev-socks5-tunnel submodule sync --recursive || true
+          git -C hev-socks5-tunnel submodule update --init --recursive --force || true
+        fi
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v4
@@ -67,7 +82,7 @@ jobs:
       if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
       run: |
         if [ -d "hev-socks5-tunnel" ]; then
-          git -C hev-socks5-tunnel submodule update --init --recursive
+          git -C hev-socks5-tunnel submodule update --init --recursive || true
         fi
         bash compile-hevtun.sh
     
@@ -95,6 +110,9 @@ jobs:
     - name: Build libaether
       if: steps.cache-libaether-restore.outputs.cache-hit != 'true'
       run: |
+        if [ ! -d "aether/aether" ] || [ -z "$(ls -A aether/aether 2>/dev/null)" ]; then
+          git -C aether submodule update --init --recursive --force || true
+        fi
         bash compile-aether.sh
 
     - name: Save libaether
