@@ -221,6 +221,11 @@ jobs:
       run: |
         cd ${{ github.workspace }}/V2rayNG
         echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+        # دریافت فایل wrapper گرادل
+        mkdir -p gradle/wrapper
+        curl -fsSL "https://raw.githubusercontent.com/2dust/v2rayNG/master/V2rayNG/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+
         chmod 755 gradlew
         # The JVM unit tests are the only automated check of the Kotlin logic; a failure stops the
         # build before anything is assembled or signed.
