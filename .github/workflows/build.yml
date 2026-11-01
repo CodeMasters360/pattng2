@@ -36,22 +36,32 @@ jobs:
 
     - name: Initialize nested submodules
       run: |
-        # Redirect all git@ SSH URLs to HTTPS so GitHub Actions runner can clone them without SSH keys
         git config --global url."https://github.com/".insteadOf git@github.com:
         git config --global url."https://".insteadOf git://
 
-        # Sync and update root submodules recursively
-        git submodule sync --recursive
-        git submodule update --init --recursive --force
+        # تلاش اولیه برای دریافت ساب‌ماژول‌ها
+        git submodule sync --recursive || true
+        git submodule update --init --recursive --force || true
 
-        # Explicitly ensure submodules inside aether and hev-socks5-tunnel are initialized
-        if [ -d "aether" ]; then
-          git -C aether submodule sync --recursive || true
-          git -C aether submodule update --init --recursive --force || true
+        # تضمین وجود سورس‌های hev-socks5-tunnel
+        if [ ! -f "hev-socks5-tunnel/build.mk" ]; then
+          echo "hev-socks5-tunnel missing. Cloning directly..."
+          rm -rf hev-socks5-tunnel
+          git clone --depth 1 --recursive https://github.com/heiher/hev-socks5-tunnel.git hev-socks5-tunnel
         fi
-        if [ -d "hev-socks5-tunnel" ]; then
-          git -C hev-socks5-tunnel submodule sync --recursive || true
-          git -C hev-socks5-tunnel submodule update --init --recursive --force || true
+
+        # تضمین وجود سورس‌های aether و ساب‌ماژول تو در توی aether/aether
+        if [ ! -d "aether/aether" ] || [ -z "$(ls -A aether/aether 2>/dev/null)" ]; then
+          echo "aether/aether missing. Cloning Aether recursively..."
+          rm -rf aether
+          git clone --recursive -b main https://github.com/patterniha/Aether.git aether || git clone --recursive https://github.com/patterniha/Aether.git aether
+        fi
+
+        # تضمین وجود سورس‌های AndroidLibXrayLite برای تگ‌گیری بعدی
+        if [ ! -d "AndroidLibXrayLite/.git" ]; then
+          echo "AndroidLibXrayLite missing. Cloning directly..."
+          rm -rf AndroidLibXrayLite
+          git clone https://github.com/patterniha/AndroidLibXrayLite.git AndroidLibXrayLite
         fi
 
     - name: Setup Android SDK
@@ -81,9 +91,6 @@ jobs:
     - name: Build libhevtun
       if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
       run: |
-        if [ -d "hev-socks5-tunnel" ]; then
-          git -C hev-socks5-tunnel submodule update --init --recursive || true
-        fi
         bash compile-hevtun.sh
     
     - name: Save libhevtun
@@ -110,9 +117,6 @@ jobs:
     - name: Build libaether
       if: steps.cache-libaether-restore.outputs.cache-hit != 'true'
       run: |
-        if [ ! -d "aether/aether" ] || [ -z "$(ls -A aether/aether 2>/dev/null)" ]; then
-          git -C aether submodule update --init --recursive --force || true
-        fi
         bash compile-aether.sh
 
     - name: Save libaether
