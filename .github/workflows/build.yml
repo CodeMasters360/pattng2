@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
+        description: 'Release Tag (leave empty for auto-generated timestamp tag)'
         required: false
         type: string
   push:
@@ -16,52 +17,78 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.determine_tag.outputs.tag }}
     env:
-      # The latest stable release, as aether's own release workflow builds with. The libaether
-      # cache is keyed by the rustc it installs, so a new stable release builds the core afresh.
       RUST_TOOLCHAIN: "stable"
-      # The Go line the Psiphon client's go.mod asks for, which also covers lyrebird's older one;
-      # aether/psiphon-build.sh and aether/pt-build.sh pin the programs themselves. Bump it when a
-      # bumped aether submodule pins a program that asks for a newer line.
       GO_VERSION: "1.26"
-      # Allow missing dependencies in NDK build for strict/newer NDKs
       APP_ALLOW_MISSING_DEPS: "true"
 
     steps:
-    - name: Checkout code
+    - name: Checkout local repository
       uses: actions/checkout@v7
       with:
         submodules: 'recursive'
         fetch-depth: '0'
 
+    # Step to pull latest source changes directly from original upstream PattNG repo
+    - name: Sync latest changes from upstream PattNG
+      run: |
+        git config --global user.email "action@github.com"
+        git config --global user.name "GitHub Action"
+        git remote add upstream https://github.com/patterniha/PattNG.git || true
+        git fetch upstream
+        UPSTREAM_BRANCH=$(git remote show upstream | sed -n '/HEAD branch/s/.*: //p')
+        echo "Default upstream branch is: $UPSTREAM_BRANCH"
+        git merge upstream/$UPSTREAM_BRANCH -m "Auto sync upstream" --allow-unrelated-histories || git reset --hard upstream/$UPSTREAM_BRANCH
+
+    # Determine tag: use user input, or auto-generate based on UTC timestamp
+    - name: Determine Release Tag
+      id: determine_tag
+      run: |
+        if [ -n "${{ inputs.release_tag }}" ]; then
+          FINAL_TAG="${{ inputs.release_tag }}"
+        else
+          FINAL_TAG="$(date +'%Y.%m.%d-%H%M')"
+        fi
+        echo "Selected release tag: $FINAL_TAG"
+        echo "tag=$FINAL_TAG" >> $GITHUB_OUTPUT
+        echo "FINAL_TAG=$FINAL_TAG" >> $GITHUB_ENV
+
+    # Initialize submodules and fallback clones for recursive dependencies
     - name: Initialize nested submodules
       run: |
         git config --global url."https://github.com/".insteadOf git@github.com:
         git config --global url."https://".insteadOf git://
 
-        # تلاش اولیه برای دریافت ساب‌ماژول‌ها
         git submodule sync --recursive || true
         git submodule update --init --recursive --force || true
 
-        # تضمین وجود سورس‌های hev-socks5-tunnel
+        # Ensure hev-socks5-tunnel exists
         if [ ! -f "hev-socks5-tunnel/build.mk" ]; then
           echo "hev-socks5-tunnel missing. Cloning directly..."
           rm -rf hev-socks5-tunnel
           git clone --depth 1 --recursive https://github.com/heiher/hev-socks5-tunnel.git hev-socks5-tunnel
         fi
 
-        # تضمین وجود سورس‌های aether و ساب‌ماژول تو در توی aether/aether
+        # Ensure aether and its internal submodule aether/aether exist
         if [ ! -d "aether/aether" ] || [ -z "$(ls -A aether/aether 2>/dev/null)" ]; then
           echo "aether/aether missing. Cloning Aether recursively..."
           rm -rf aether
           git clone --recursive -b main https://github.com/patterniha/Aether.git aether || git clone --recursive https://github.com/patterniha/Aether.git aether
         fi
 
-        # تضمین وجود سورس‌های AndroidLibXrayLite برای تگ‌گیری بعدی
+        # Ensure AndroidLibXrayLite exists and is updated to latest main
         if [ ! -d "AndroidLibXrayLite/.git" ]; then
           echo "AndroidLibXrayLite missing. Cloning directly..."
           rm -rf AndroidLibXrayLite
           git clone https://github.com/patterniha/AndroidLibXrayLite.git AndroidLibXrayLite
+        else
+          echo "Updating AndroidLibXrayLite to latest main..."
+          pushd AndroidLibXrayLite
+          git fetch origin main || true
+          git checkout origin/main || true
+          popd
         fi
 
     - name: Setup Android SDK
@@ -77,6 +104,7 @@ jobs:
           --channel=0 \
           --install "ndk;30.0.16248370"
         echo "NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> $GITHUB_ENV
         sed -i '10i\
         \
             ndkVersion = "30.0.16248370"' ${{ github.workspace }}/V2rayNG/app/build.gradle.kts
@@ -130,32 +158,9 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: ${{ env.GO_VERSION }}
-        # The client is built from a checkout of its own; there is no go.sum here to cache by.
         cache: false
 
-    # The Aether core runs Psiphon as a program of its own, the psiphon-tunnel-core console client,
-    # which the app ships beside the core as libpsiphon-tunnel-core.so; see compile-psiphon.sh.
-    - name: Restore cached Psiphon client
-      id: cache-psiphon-restore
-      uses: actions/cache/restore@v6
-      with:
-        path: ${{ github.workspace }}/libs-psiphon
-        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
-
-    - name: Build the Psiphon client
-      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
-      run: |
-        bash compile-psiphon.sh
-
-    - name: Save the Psiphon client
-      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v6
-      with:
-        path: ${{ github.workspace }}/libs-psiphon
-        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
-
-    # Tor's bridges run through a pluggable transport, a program of its own: lyrebird, which aether
-    # builds and the app ships beside the core as liblyrebird.so; see compile-pt.sh.
+    # Tor's bridges run through a pluggable transport: lyrebird
     - name: Restore cached pluggable transport
       id: cache-pt-restore
       uses: actions/cache/restore@v6
@@ -175,6 +180,46 @@ jobs:
         path: ${{ github.workspace }}/libs-pt
         key: pt-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/pt-build.sh') }}-${{ hashFiles('compile-pt.sh') }}
 
+    # Psiphon tunnel client build
+    - name: Restore cached Psiphon client
+      id: cache-psiphon-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ github.workspace }}/libs-psiphon
+        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
+
+    - name: Build the Psiphon client
+      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
+      run: |
+        bash compile-psiphon.sh
+
+    - name: Save the Psiphon client
+      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ github.workspace }}/libs-psiphon
+        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
+
+    # Compile libv2ray.aar from AndroidLibXrayLite sources using gomobile
+    - name: Compile libv2ray.aar from source
+      run: |
+        echo "Installing gomobile..."
+        go install golang.org/x/mobile/cmd/gomobile@latest
+        export PATH=$PATH:$(go env GOPATH)/bin
+        export ANDROID_NDK_HOME=$NDK_HOME
+
+        pushd AndroidLibXrayLite
+        mkdir -p assets data
+        bash gen_assets.sh download
+        cp -v data/*.dat assets/
+        gomobile init
+        go mod tidy
+        gomobile bind -v -androidapi 29 -trimpath -ldflags='-s -w -buildid= -checklinkname=0' ./
+
+        mkdir -p ${{ github.workspace }}/V2rayNG/app/libs/
+        cp -v libv2ray.aar ${{ github.workspace }}/V2rayNG/app/libs/
+        popd
+
     - name: Stage the native libraries
       run: |
         cp -r ${{ github.workspace }}/libs ${{ github.workspace }}/V2rayNG/app
@@ -182,27 +227,9 @@ jobs:
         cp -r ${{ github.workspace }}/libs-psiphon/. ${{ github.workspace }}/V2rayNG/app/libs/
         cp -r ${{ github.workspace }}/libs-pt/. ${{ github.workspace }}/V2rayNG/app/libs/
 
-    # Psiphon's client starts with the newest server list the build could fetch, so a fresh install has
-    # servers before it can reach the list on its own; see fetch-psiphon-servers.sh.
     - name: Fetch the Psiphon server list
       run: |
         bash fetch-psiphon-servers.sh
-
-    - name: Fetch AndroidLibXrayLite tag
-      run: |
-        pushd AndroidLibXrayLite
-        CURRENT_TAG=$(git describe --tags --abbrev=0)
-        echo "Current tag in this repo: $CURRENT_TAG"
-        echo "CURRENT_TAG=$CURRENT_TAG" >> $GITHUB_ENV
-        popd
-
-    - name: Download libv2ray
-      uses: robinraju/release-downloader@v1.13
-      with:
-        repository: 'patterniha/AndroidLibXrayLite'
-        tag: ${{ env.CURRENT_TAG }}
-        fileName: 'libv2ray.aar'
-        out-file-path: V2rayNG/app/libs/
 
     - name: Setup Java
       uses: actions/setup-java@v6.1.0
@@ -210,33 +237,47 @@ jobs:
         distribution: 'temurin'
         java-version: '21'
 
-    - name: Decode Keystore
-      uses: timheuer/base64-to-file@v2.0.0
+    # Keystore setup: uses repository secret if available, else generates a self-signed key
+    - name: Setup Keystore
       id: android_keystore
-      with:
-        fileName: "android_keystore.jks"
-        encodedString: ${{ secrets.APP_KEYSTORE_BASE64 }}
+      run: |
+        KEYSTORE_PATH="/tmp/android_keystore.jks"
+        if [ -n "${{ secrets.APP_KEYSTORE_BASE64 }}" ]; then
+          echo "Decoding provided keystore secret..."
+          echo "${{ secrets.APP_KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_PATH"
+          echo "filePath=$KEYSTORE_PATH" >> $GITHUB_OUTPUT
+          echo "store_pwd=${{ secrets.APP_KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+          echo "alias=${{ secrets.APP_KEYSTORE_ALIAS }}" >> $GITHUB_OUTPUT
+          echo "key_pwd=${{ secrets.APP_KEY_PASSWORD }}" >> $GITHUB_OUTPUT
+        else
+          echo "Keystore secret not provided. Generating self-signed temporary keystore..."
+          keytool -genkeypair -v -keystore "$KEYSTORE_PATH" -alias pattng -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=PattNG, OU=App, O=Org, L=City, S=State, C=US"
+          echo "filePath=$KEYSTORE_PATH" >> $GITHUB_OUTPUT
+          echo "store_pwd=123456" >> $GITHUB_OUTPUT
+          echo "alias=pattng" >> $GITHUB_OUTPUT
+          echo "key_pwd=123456" >> $GITHUB_OUTPUT
+        fi
 
     - name: Build APK
       run: |
         cd ${{ github.workspace }}/V2rayNG
         echo "sdk.dir=${ANDROID_HOME}" > local.properties
 
-        # دریافت فایل wrapper گرادل
+        # Fetch gradle wrapper jar if absent
         mkdir -p gradle/wrapper
         curl -fsSL "https://raw.githubusercontent.com/2dust/v2rayNG/master/V2rayNG/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
 
         chmod 755 gradlew
-        # The JVM unit tests are the only automated check of the Kotlin logic; a failure stops the
-        # build before anything is assembled or signed.
         ./gradlew :app:testPlaystoreDebugUnitTest
         ./gradlew licenseFdroidReleaseReport
-        ./gradlew assembleRelease -PpattngVersion="${{ inputs.release_tag }}" -Pandroid.injected.signing.store.file=${{ steps.android_keystore.outputs.filePath }} -Pandroid.injected.signing.store.password=${{ secrets.APP_KEYSTORE_PASSWORD }} -Pandroid.injected.signing.key.alias=${{ secrets.APP_KEYSTORE_ALIAS }} -Pandroid.injected.signing.key.password=${{ secrets.APP_KEY_PASSWORD }}
+        ./gradlew assembleRelease -PpattngVersion="${{ env.FINAL_TAG }}" \
+          -Pandroid.injected.signing.store.file=${{ steps.android_keystore.outputs.filePath }} \
+          -Pandroid.injected.signing.store.password=${{ steps.android_keystore.outputs.store_pwd }} \
+          -Pandroid.injected.signing.key.alias=${{ steps.android_keystore.outputs.alias }} \
+          -Pandroid.injected.signing.key.password=${{ steps.android_keystore.outputs.key_pwd }}
     
     - name: Check the native libraries in the APKs
       run: |
-        # Looked into as ZIP files: every ABI the Aether core is built for has to carry the core, its
-        # Psiphon client and its pluggable transport, and each APK's native files are listed for the record.
         status=0
         for apk in ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*.apk; do
           entries=$(unzip -Z1 "$apk" | grep '^lib/' || true)
@@ -256,21 +297,21 @@ jobs:
 
     - name: Upload arm64-v8a APK
       uses: actions/upload-artifact@v7
-      if: ${{  success() }}
+      if: ${{ success() }}
       with:
         name: arm64-v8a
         path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*arm64-v8a*.apk
 
     - name: Upload armeabi-v7a APK
       uses: actions/upload-artifact@v7
-      if: ${{  success() }}
+      if: ${{ success() }}
       with:
         name: armeabi-v7a
         path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*armeabi-v7a*.apk
 
     - name: Upload x86 APK
       uses: actions/upload-artifact@v7
-      if: ${{  success() }}
+      if: ${{ success() }}
       with:
         name: x86-apk
         path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*x86*.apk
@@ -285,7 +326,7 @@ jobs:
   sign-and-release:
     needs: build
     runs-on: ubuntu-26.04
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    if: success()
 
     steps:
       - name: Download APK artifacts
@@ -293,28 +334,31 @@ jobs:
         with:
           path: release
 
-      - name: Sign APK files
+      - name: Sign APK files (Optional)
         run: |
-          # Quiet: a plain import prints the key's user ID, name and email, into the public log.
-          printf '%s' "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --quiet --import
-          KEY=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
           mkdir -p release-files
-
           find release -type f -name '*.apk' | while read apk; do
             cp "$apk" release-files/
-            gpg --batch --yes --local-user "$KEY" --detach-sign --output "release-files/$(basename "$apk").sig" "$apk"
           done
 
-          gpg --armor --export "$KEY" > release-files/PattNG-public-key.asc
+          if [ -n "${{ secrets.GPG_PRIVATE_KEY }}" ]; then
+            printf '%s' "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --quiet --import
+            KEY=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+            find release -type f -name '*.apk' | while read apk; do
+              gpg --batch --yes --local-user "$KEY" --detach-sign --output "release-files/$(basename "$apk").sig" "$apk"
+            done
+            gpg --armor --export "$KEY" > release-files/PattNG-public-key.asc
+          else
+            echo "GPG_PRIVATE_KEY secret not found, skipping signature step."
+          fi
 
-      - name: Upload APKs, signatures and public key to release
+      - name: Upload APKs to GitHub Release
         uses: svenstaro/upload-release-action@v2
         with:
           file: release-files/*
-          tag: ${{ inputs.release_tag }}
-          release_name: PattNG v${{ inputs.release_tag }}
-          body: "."
-          target_commit: ${{ github.sha }}
+          tag: ${{ needs.build.outputs.release_tag }}
+          release_name: PattNG v${{ needs.build.outputs.release_tag }}
+          body: "Automated build of PattNG with locally compiled libv2ray core."
           file_glob: true
-          prerelease: true
+          prerelease: false
           overwrite: true
