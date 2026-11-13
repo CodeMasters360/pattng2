@@ -157,6 +157,52 @@ class CoreOutboundBuilderTest {
     }
 
     @Test
+    fun test_populateTlsSettings_offersTheCurvePreferencesAsAListAndSessionResumptionOnlyWhenOn() {
+        // PattNG: curvePreferences split on ',' and trimmed as alpn's are, none written for none; enableSessionResumption
+        // left out while it is off.
+        val offered = mapOf(
+            "X25519MLKEM768,X25519" to listOf("X25519MLKEM768", "X25519"),
+            " X25519 ," to listOf("X25519"),
+            " , " to null,
+            "" to null,
+            null to null,
+        )
+        for ((curves, names) in offered) {
+            val streamSettings = OutboundBean.StreamSettingsBean()
+
+            CoreOutboundBuilder.populateTlsSettings(streamSettings, echProfile(AppConfig.TLS, " ").apply { curvePreferences = curves }, null)
+
+            assertEquals(names, streamSettings.tlsSettings?.curvePreferences, "$curves")
+            assertEquals(names, CoreOutboundBuilder.curvePreferenceNames(curves), "$curves")
+        }
+        for ((resumption, written) in listOf(true to true, false to null, null to null)) {
+            val streamSettings = OutboundBean.StreamSettingsBean()
+
+            CoreOutboundBuilder.populateTlsSettings(streamSettings, echProfile(AppConfig.TLS, " ").apply { enableSessionResumption = resumption }, null)
+
+            assertEquals(written, streamSettings.tlsSettings?.enableSessionResumption, "$resumption")
+        }
+
+        // Written, they follow cipherSuites, as in the editor and the share links.
+        val streamSettings = OutboundBean.StreamSettingsBean()
+        CoreOutboundBuilder.populateTlsSettings(
+            streamSettings,
+            echProfile(AppConfig.TLS, " ").apply {
+                fingerPrint = "unsafe"
+                cipherSuites = "TLS_AES_128_GCM_SHA256"
+                curvePreferences = "X25519MLKEM768,X25519"
+                enableSessionResumption = true
+            },
+            null,
+        )
+        val json = JsonUtil.toJson(streamSettings.tlsSettings)
+        val cipherSuites = json.indexOf("\"cipherSuites\"")
+        val curvePreferences = json.indexOf("\"curvePreferences\"")
+        val sessionResumption = json.indexOf("\"enableSessionResumption\"")
+        assertTrue(cipherSuites in 0 until curvePreferences && curvePreferences < sessionResumption, json)
+    }
+
+    @Test
     fun test_applyTargetStrategy_setsOutboundTargetStrategy() {
         val outbound = OutboundBean(protocol = "vless")
 
@@ -390,5 +436,30 @@ class CoreOutboundBuilderTest {
             "[::1]", "12345::1", "::1%", "%eth0", "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:1.2.3.4:5", "::1.2.3", "1:2:3:4:5:1.2.3.4",
             "::g", "1:2:3:4:5:6:7:8::", "１.1.1.1",
         ).forEach { assertFalse(CoreOutboundBuilder.isNetipAddress(it), it) }
+    }
+
+    /** A socks or http profile on an address, so its outbound is built without reading the settings store. */
+    private fun maskedOutbound(type: EConfigType, finalMask: String?): OutboundBean? {
+        val profile = ProfileItem.create(type).apply {
+            server = "1.2.3.4"
+            serverPort = "1080"
+            this.finalMask = finalMask
+        }
+        return if (type == EConfigType.SOCKS) CoreOutboundBuilder.toOutboundSocks(profile) else CoreOutboundBuilder.toOutboundHttp(profile)
+    }
+
+    @Test
+    fun aSocksOrHttpOutboundCarriesTheFinalMaskOfItsProfile() {
+        val mask = """{"tcp": [{"type": "fragment", "settings": {"packets": "tlshello", "length": "100-200"}}]}"""
+        for (type in listOf(EConfigType.SOCKS, EConfigType.HTTP)) {
+            val outbound = maskedOutbound(type, mask)
+            assertEquals(JsonUtil.parseString(mask), outbound?.streamSettings?.finalmask, type.name)
+            // The mask goes on the stream settings the outbound is created with; no transport comes in.
+            assertEquals(AppConfig.DEFAULT_NETWORK, outbound?.streamSettings?.network, type.name)
+            // No mask, or a blank one, sets none: a blank one is no JSON, so it is not handed on to be warned of.
+            for (none in listOf(null, "", "  ")) {
+                assertNull(maskedOutbound(type, none)?.streamSettings?.finalmask, "$type $none")
+            }
+        }
     }
 }

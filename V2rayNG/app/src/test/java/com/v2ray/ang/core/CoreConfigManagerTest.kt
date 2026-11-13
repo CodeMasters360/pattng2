@@ -1,8 +1,10 @@
 package com.v2ray.ang.core
 
+import android.content.Context
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.dto.CoreConfigContext
 import com.v2ray.ang.dto.V2rayConfig
+import com.v2ray.ang.dto.entities.ProfileEntry
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.BalancerStrategyType
 import com.v2ray.ang.enums.CoreResolvedType
@@ -13,8 +15,12 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
 
 class CoreConfigManagerTest {
+
+    /** [profile] as it is stored, under its name. */
+    private fun stored(profile: ProfileItem) = ProfileEntry(profile.remarks, profile)
 
     private fun socks(address: String, port: Int) = V2rayConfig.OutboundBean(
         protocol = "socks",
@@ -26,8 +32,8 @@ class CoreConfigManagerTest {
         val warp = ProfileItem.create(EConfigType.AETHER).apply { remarks = "warp"; aetherProtocol = "wg" }
         val named = ProfileItem.create(EConfigType.VLESS).apply { remarks = AppConfig.TAG_EXIT_NODE; server = "1.2.3.4"; serverPort = "443" }
         val outbounds = listOf(
-            CoreConfigContext.ResolvedOutbound(AppConfig.TAG_PROXY, warp, listOf(warp), CoreResolvedType.NORMAL),
-            CoreConfigContext.ResolvedOutbound(AppConfig.TAG_EXIT_NODE, named, listOf(named), CoreResolvedType.NORMAL),
+            CoreConfigContext.ResolvedOutbound(AppConfig.TAG_PROXY, stored(warp), listOf(stored(warp)), CoreResolvedType.NORMAL),
+            CoreConfigContext.ResolvedOutbound(AppConfig.TAG_EXIT_NODE, stored(named), listOf(stored(named)), CoreResolvedType.NORMAL),
         )
         assertTrue(CoreConfigManager.takesExitNodeName(AetherDependency.of(outbounds), outbounds))
         // Without an Aether core the name is nobody's.
@@ -332,16 +338,16 @@ class CoreConfigManagerTest {
         val member = ProfileItem.create(EConfigType.AETHER).apply { remarks = "member warp"; aetherProtocol = "wg" }
         val other = ProfileItem.create(EConfigType.AETHER).apply { remarks = "chain warp"; aetherProtocol = "masque" }
         val entry = ProfileItem.create(EConfigType.VLESS).apply { remarks = "entry"; server = "203.0.113.7"; serverPort = "443" }
-        val group = CoreConfigContext.ResolvedOutbound(AppConfig.TAG_PROXY, member, listOf(member), CoreResolvedType.POLICYGROUP)
+        val group = CoreConfigContext.ResolvedOutbound(AppConfig.TAG_PROXY, stored(member), listOf(stored(member)), CoreResolvedType.POLICYGROUP)
         // The fallback, a chain whose Aether hop dials out through entry: another core.
-        val fallback = CoreConfigContext.ResolvedOutbound("fallback", other, listOf(other, entry), CoreResolvedType.PROXYCHAIN)
+        val fallback = CoreConfigContext.ResolvedOutbound("fallback", stored(other), listOf(stored(other), stored(entry)), CoreResolvedType.PROXYCHAIN)
 
         assertEquals(AetherDependency.Conflicting, CoreConfigManager.speedtestCoresRefusal(listOf(group, fallback)))
         // The primary alone, or a fallback without a core of its own, or on the same core, is measured.
         assertNull(CoreConfigManager.speedtestCoresRefusal(listOf(group)))
-        val plain = CoreConfigContext.ResolvedOutbound("fallback", entry, listOf(entry), CoreResolvedType.NORMAL)
+        val plain = CoreConfigContext.ResolvedOutbound("fallback", stored(entry), listOf(stored(entry)), CoreResolvedType.NORMAL)
         assertNull(CoreConfigManager.speedtestCoresRefusal(listOf(group, plain)))
-        val same = CoreConfigContext.ResolvedOutbound("fallback", member, listOf(member), CoreResolvedType.NORMAL)
+        val same = CoreConfigContext.ResolvedOutbound("fallback", stored(member), listOf(stored(member)), CoreResolvedType.NORMAL)
         assertNull(CoreConfigManager.speedtestCoresRefusal(listOf(group, same)))
     }
 
@@ -372,5 +378,32 @@ class CoreConfigManagerTest {
         assertFalse(CoreConfigManager.shouldUseStandardObservatory(BalancerStrategyType.LEAST_LOAD, "proxy-group-1-a"))
         assertTrue(CoreConfigManager.shouldUseStandardObservatory(BalancerStrategyType.RANDOM, "proxy-group-1-a"))
         assertFalse(CoreConfigManager.shouldUseStandardObservatory(BalancerStrategyType.ROUND_ROBIN, null))
+    }
+
+    @Test
+    fun aChinaModeDomainGoesThroughEveryDomesticServerAndNeverReachesTheRemoteOne() {
+        val configContext = CoreConfigContext(
+            context = mock<Context>(),
+            guid = "guid",
+            routingDomainRules = listOf(
+                CoreConfigContext.RoutingDomainRule(listOf("geosite:google"), AppConfig.TAG_PROXY),
+                CoreConfigContext.RoutingDomainRule(listOf(AppConfig.GEOSITE_CN), AppConfig.TAG_DIRECT),
+            ),
+        )
+        val domesticDns = listOf("223.5.5.5", "119.29.29.29")
+        val servers = ArrayList<Any>()
+        CoreConfigManager.buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
+        CoreConfigManager.buildDnsFromRoutingRules(configContext, servers, listOf("https://8.8.8.8/dns-query"), domesticDns)
+
+        // The servers the core asks for a geosite:cn domain: those whose domains match, in order, up to the first
+        // with finalQuery.
+        val matching = servers.filterIsInstance<V2rayConfig.DnsBean.ServersBean>()
+            .filter { AppConfig.GEOSITE_CN in it.domains.orEmpty() }
+        val last = matching.indexOfFirst { it.finalQuery == true }
+        assertTrue(last >= 0, "a geosite:cn domain must stop at a domestic server, before the remote one")
+        val asked = matching.take(last + 1)
+        // A Chinese IP from each domestic server first, then any answer from them, and never the remote server.
+        assertEquals(domesticDns + domesticDns, asked.map { it.address })
+        assertEquals(listOf(listOf(AppConfig.GEOIP_CN), listOf(AppConfig.GEOIP_CN), null, null), asked.map { it.expectIPs })
     }
 }

@@ -114,6 +114,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
             streamSecurityOptions = stringArrayResource(R.array.streamsecurityxs).toList(),
             uTlsOptions = stringArrayResource(R.array.streamsecurity_utls).toList(),
             alpnOptions = stringArrayResource(R.array.streamsecurity_alpn).toList(),
+            curvePreferencesOptions = stringArrayResource(R.array.curve_preferences).toList(),
             browserDialerOptions = stringArrayResource(R.array.browser_dialer_mode_value).toList()
         )
 
@@ -126,6 +127,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         val streamSecurityOptions: List<String>,
         val uTlsOptions: List<String>,
         val alpnOptions: List<String>,
+        val curvePreferencesOptions: List<String>,
         val browserDialerOptions: List<String>
     )
 
@@ -281,7 +283,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
     /** dialMode goes to streamSettings.sockopt, so every protocol offers it. */
     @Composable
     protected fun CommonDialModeField(state: ServerUiState) {
-        FormTextField(
+        DialModeField(
             stringResource(R.string.server_lab_dial_mode),
             state.dialMode,
             { state.dialMode = it }
@@ -304,16 +306,24 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         state: ServerUiState,
         options: FieldOptions,
         scope: CoroutineScope,
-        buildProfileItem: () -> ProfileItem
+        buildProfileItem: () -> ProfileItem,
+        showSecuritySelector: Boolean = true,
+        showFingerprint: Boolean = true,
+        showAllowInsecure: Boolean = true,
+        showEchConfigList: Boolean = true,
+        // PattNG: cipherSuites, which MASQUE over HTTP/3 does not use, see CoreOutboundBuilder.toOutboundMasque
+        showCipherSuites: Boolean = true
     ) {
         val context = LocalContext.current
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FormDropdownField(
-                stringResource(R.string.server_lab_stream_security),
-                state.streamSecurity,
-                options.streamSecurityOptions,
-                { state.streamSecurity = it }
-            )
+            if (showSecuritySelector) {
+                FormDropdownField(
+                    stringResource(R.string.server_lab_stream_security),
+                    state.streamSecurity,
+                    options.streamSecurityOptions,
+                    { state.streamSecurity = it }
+                )
+            }
 
             if (state.streamSecurity.isBlank()) {
                 return@Column
@@ -324,40 +334,62 @@ abstract class BaseServerActivity : BaseComponentActivity() {
                 state.sni,
                 { state.sni = it }
             )
-            FormDropdownField(
-                stringResource(R.string.server_lab_stream_fingerprint),
-                state.fingerPrint,
-                options.uTlsOptions,
-                { state.fingerPrint = it }
-            )
+            if (showFingerprint) {
+                FormDropdownField(
+                    stringResource(R.string.server_lab_stream_fingerprint),
+                    state.fingerPrint,
+                    options.uTlsOptions,
+                    { state.fingerPrint = it }
+                )
+            }
 
             if (state.streamSecurity == TLS) {
-                SettingsSwitchItem(
-                    title = stringResource(R.string.server_lab_allow_insecure),
-                    checked = state.allowInsecure,
-                    onCheckedChange = { state.allowInsecure = it }
-                )
+                if (showAllowInsecure) {
+                    SettingsSwitchItem(
+                        title = stringResource(R.string.server_lab_allow_insecure),
+                        checked = state.allowInsecure,
+                        onCheckedChange = { state.allowInsecure = it }
+                    )
+                }
                 FormDropdownField(
                     stringResource(R.string.server_lab_stream_alpn),
                     state.alpn,
                     options.alpnOptions,
                     { state.alpn = it }
                 )
-                CipherSuitesField(
-                    stringResource(R.string.server_lab_cipher_suites),
-                    state.cipherSuites,
-                    { state.cipherSuites = it }
+                if (showCipherSuites) {
+                    CipherSuitesField(
+                        stringResource(R.string.server_lab_cipher_suites),
+                        state.cipherSuites,
+                        { state.cipherSuites = it }
+                    )
+                }
+                // PattNG: curvePreferences, one of a few lists as alpn is one of a few, and enableSessionResumption,
+                // after cipherSuites
+                FormDropdownField(
+                    stringResource(R.string.server_lab_curve_preferences),
+                    state.curvePreferences,
+                    options.curvePreferencesOptions,
+                    { state.curvePreferences = it }
                 )
-                FormTextField(
-                    stringResource(R.string.server_lab_ech_config_list),
-                    state.echConfigList,
-                    { state.echConfigList = it }
+                SettingsSwitchItem(
+                    title = stringResource(R.string.server_lab_enable_session_resumption),
+                    checked = state.enableSessionResumption,
+                    onCheckedChange = { state.enableSessionResumption = it }
                 )
-                FormTextField(
-                    stringResource(R.string.server_lab_ech_outbound),
-                    state.echOutbound,
-                    { state.echOutbound = it }
-                )
+                if (showEchConfigList) {
+                    FormTextField(
+                        stringResource(R.string.server_lab_ech_config_list),
+                        state.echConfigList,
+                        { state.echConfigList = it }
+                    )
+                    // PattNG: the ECH outbound goes with the echConfigList, see EchOutbound
+                    FormTextField(
+                        stringResource(R.string.server_lab_ech_outbound),
+                        state.echOutbound,
+                        { state.echOutbound = it }
+                    )
+                }
                 FormTextField(
                     stringResource(R.string.server_lab_verify_peer_cert_by_name),
                     state.verifyPeerCertByName,
@@ -498,6 +530,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         val tlsError = when (TlsSettingsCheck.validate(config)) {
             null -> null
             TlsSettingsCheck.Error.CIPHER_SUITES_NEED_UNSAFE -> R.string.toast_cipher_suites_need_unsafe
+            TlsSettingsCheck.Error.CURVE_PREFERENCES_NEED_UNSAFE -> R.string.toast_curve_preferences_need_unsafe
             TlsSettingsCheck.Error.WEBSOCKET_ALPN_NOT_HTTP1 -> R.string.toast_websocket_alpn_http1_only
         }
         if (tlsError != null) {

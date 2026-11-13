@@ -2,6 +2,7 @@ package com.v2ray.ang.dto.entities
 
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.enums.EConfigType
+import com.v2ray.ang.extension.isNotNullEmpty
 import com.v2ray.ang.util.Utils
 
 data class ProfileItem(
@@ -24,6 +25,7 @@ data class ProfileItem(
     var headerType: String? = null,
     var host: String? = null,
     var path: String? = null,
+    var headers: String? = null,
     var seed: String? = null,
     var kcpMtu: Int? = null,
     var kcpTti: Int? = null,
@@ -42,6 +44,9 @@ data class ProfileItem(
     var alpn: String? = null,
     var fingerPrint: String? = null,
     var cipherSuites: String? = null,
+    // PattNG: TLS curvePreferences, the names joined by ',' as alpn's are, and enableSessionResumption, after cipherSuites
+    var curvePreferences: String? = null,
+    var enableSessionResumption: Boolean? = null,
     var insecure: Boolean? = null,
     var echConfigList: String? = null,
     var echOutbound: String? = null,
@@ -60,7 +65,10 @@ data class ProfileItem(
     var mtu: Int? = null,
     var remoteDNS: String? = null,
 
+    var obfs: String? = null,
     var obfsPassword: String? = null,
+    var minPacketSize: String? = null,
+    var maxPacketSize: String? = null,
     var portHopping: String? = null,
     var portHoppingInterval: String? = null,
     @Deprecated("Use pinnedCA256")
@@ -212,6 +220,11 @@ data class ProfileItem(
         }
         return "${Utils.getIpv6Address(server)}:$serverPort"
     }
+
+    fun isGeckoObfs(): Boolean =
+        obfs.equals("gecko", ignoreCase = true)
+            || minPacketSize.isNotNullEmpty()
+            || maxPacketSize.isNotNullEmpty()
 
     /**
      * Dedicated identity for "remove duplicate configurations".
